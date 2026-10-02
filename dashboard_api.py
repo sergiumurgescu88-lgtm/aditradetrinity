@@ -33,15 +33,21 @@ logger = logging.getLogger("TrinityDashboardAPI")
 # --- LIFESPAN MANAGER (Noua sintaxa FastAPI) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
+    # --- STARTUP LOGIC ---
     asyncio.create_task(unity_background_task())
     
     if Client:
         try:
-            # Initializare conexiune cTrader de nivel inalt
+            logger.info("Se inițializează conexiunea la cTrader Open API...")
             state_manager.client = Client(CONFIG["HOST"], CONFIG["PORT"])
-            # await state_manager.client.start()
-            # Autentificare aplicatie si cont...
+            await state_manager.client.start() # <-- DECOMENTAT: Pornește clientul
+            
+            logger.info("Se autentifică...")
+            await state_manager.client.authenticate(
+                CONFIG["CLIENT_ID"], 
+                CONFIG["CLIENT_SECRET"], 
+                CONFIG["ACCESS_TOKEN"]
+            )
             state_manager.data["api_status"] = "connected"
             logger.info("✅ Trinity Backend linked to cTrader API v0.9.2")
         except Exception as e:
@@ -49,10 +55,14 @@ async def lifespan(app: FastAPI):
             state_manager.data["api_status"] = "reconnecting"
     
     yield
-    # Shutdown logic (daca e cazul)
+    
+    # --- SHUTDOWN LOGIC ---
     if state_manager.client:
-        # await state_manager.client.stop()
-        pass
+        try:
+            await state_manager.client.stop()
+            logger.info("cTrader client oprit graceful.")
+        except Exception as e:
+            logger.error(f"Eroare la oprirea clientului: {e}")
 
 app = FastAPI(title="Trinity Fund Real-Time Engine", lifespan=lifespan)
 
@@ -124,27 +134,34 @@ class TrinityState:
             bot["live_pl"] = 0.0
 
         for pos in self.raw_positions:
-            comment = getattr(pos, 'comment', '').lower() if hasattr(pos, 'comment') else ''
-            profit = getattr(pos, 'unrealizedProfit', 0.0) if hasattr(pos, 'unrealizedProfit') else 0.0
+            # Folosim getattr pentru a preveni erori dacă atributul lipsește în anumite versiuni
+            comment = str(getattr(pos, 'comment', '')).lower()
+            
+            # cTrader returnează profitul în cenți. Împărțim la 100 pentru a afișa valoarea reală.
+            raw_profit = getattr(pos, 'unrealized_gross_profit', getattr(pos, 'unrealizedProfit', 0.0))
+            profit = float(raw_profit) / 100
             
             for bot in self.data["bots"]:
                 if bot["id"].lower() in comment:
-                    bot["live_pl"] += float(profit)
+                    bot["live_pl"] += profit
 
     async def fetch_ctrader_data(self):
-        """Interactiune asincrona cu cTrader Open API folosind metodele de nivel inalt."""
+        """Interacțiune asincronă cu cTrader Open API folosind metodele de nivel înalt."""
         if not self.client or self.data["api_status"] == "reconnecting":
             return
 
         try:
-            # 1. Fetch Account Info
-            # account_res = await self.client.get_account_info(CONFIG["ACCOUNT_ID"])
-            # self.data["account"]["equity"] = account_res.equity / 100 # Conversie din cents
+            # 1. Fetch Account Info (cTrader API returnează valorile în cenți, împărțim la 100)
+            account_res = await self.client.get_account_info(CONFIG["ACCOUNT_ID"])
+            self.data["account"]["equity"] = float(getattr(account_res, 'equity', 0.0)) / 100
+            self.data["account"]["balance"] = float(getattr(account_res, 'balance', 0.0)) / 100
+            self.data["account"]["currency"] = getattr(account_res, 'currency', 'USD')
             
-            # 2. Fetch Positions (Sintaxa corecta v0.9.2)
-            # positions_res = await self.client.get_positions(CONFIG["ACCOUNT_ID"])
-            # self.raw_positions = positions_res.positions
+            # 2. Fetch Positions (Sintaxa corectă v0.9.2)
+            positions_res = await self.client.get_positions(CONFIG["ACCOUNT_ID"])
+            self.raw_positions = positions_res.positions if positions_res else []
             
+            # 3. Unifică datele
             self.match_positions_to_bots()
             self.data["api_status"] = "connected"
             
