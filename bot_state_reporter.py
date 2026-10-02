@@ -12,6 +12,7 @@ def update_trinity_status(bot_id, name, status, adx, whale, lot, bias, current_p
     """
     Actualizeaza starea botului intr-un mod atomic si non-blocking.
     Aceasta functie este proiectata pentru a fi apelata din procese separate (PM2).
+    In Linux, os.replace() este o operatie atomica la nivel de sistem de fisiere.
     """
     filepath = "/tmp/trinity_bot_states.json"
     
@@ -44,10 +45,9 @@ def update_trinity_status(bot_id, name, status, adx, whale, lot, bias, current_p
             with os.fdopen(fd, 'w') as tmp:
                 json.dump(data, tmp, indent=4)
             
-            # In Linux, os.replace() este o operatie atomica la nivel de sistem de fisiere
+            # In Linux, os.replace() asigura ca fisierul tinta este inlocuit instantaneu
             os.replace(temp_path, filepath)
         except Exception as e:
-            # Curatam fisierul temporar in caz de eroare inainte de replace
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             raise e

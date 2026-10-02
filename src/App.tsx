@@ -80,6 +80,18 @@ interface DashboardData {
   account: Account;
   bots: Bot[];
   recent_trades: TradeHistory[];
+  sentiment?: {
+    vix: number;
+    dxy: number;
+    gold: number;
+    label: string;
+  };
+  infrastructure?: {
+    ctrader_code: string;
+    uptime: string;
+    pm2_processes: { name: string; mem: string; cpu: string }[];
+    error_logs: string[];
+  };
   api_status?: 'connected' | 'reconnecting' | 'initializing';
 }
 
@@ -90,17 +102,38 @@ interface Notification {
   time: string;
 }
 
+interface LogEntry {
+  id: string;
+  timestamp: string;
+  botId: string;
+  level: 'info' | 'warn' | 'error' | 'trade';
+  message: string;
+}
+
 // --- COMPONENTS ---
-const BotCard = ({ bot }: { bot: Bot }) => {
+const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }) => {
   const isInTrade = bot.status === 'ÎN TRADE';
   const isProfit = bot.live_pl > 0;
   const isLoss = bot.live_pl < 0;
+  const [activeTab, setActiveTab] = useState<'info' | 'chart'>('info');
+
+  // Mock 7-day history per bot
+  const history = [
+    { day: 'Mon', pl: 12 },
+    { day: 'Tue', pl: -5 },
+    { day: 'Wed', pl: 18 },
+    { day: 'Thu', pl: 25 },
+    { day: 'Fri', pl: 10 },
+    { day: 'Sat', pl: 0 },
+    { day: 'Sun', pl: bot.live_pl },
+  ];
 
   return (
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`bg-slate-900/40 backdrop-blur-md border rounded-2xl p-6 transition-all duration-300 relative ${
+      onClick={() => onAnalyze(bot)}
+      className={`bg-slate-900/40 backdrop-blur-md border rounded-2xl p-6 transition-all duration-300 relative cursor-pointer group/card ${
         isInTrade ? 'glow-border-cyan border-cyan-500/40' : 'border-slate-800 hover:border-slate-700'
       }`}
     >
@@ -109,22 +142,78 @@ const BotCard = ({ bot }: { bot: Bot }) => {
           <h3 className="text-lg font-bold text-slate-100 uppercase tracking-tight">{bot.name}</h3>
           <p className="text-[9px] text-slate-500 font-mono tracking-widest uppercase">TRINITY ENGINE v4</p>
         </div>
-        <div className={`px-2.5 py-1 rounded text-[9px] font-black tracking-widest border ${
-          isInTrade ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-700'
-        }`}>
-          {bot.status}
+        <div className="flex flex-col items-end gap-2">
+          <div className={`px-2.5 py-1 rounded text-[9px] font-black tracking-widest border ${
+            isInTrade ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-500 border-slate-700'
+          }`}>
+            {bot.status}
+          </div>
+          <div className="flex gap-1 bg-slate-950/40 p-1 rounded-lg border border-slate-800/40">
+            <button 
+              onClick={() => setActiveTab('info')}
+              className={`p-1 rounded-md transition-colors ${activeTab === 'info' ? 'bg-slate-800 text-cyan-400' : 'text-slate-600 hover:text-slate-400'}`}
+            >
+              <Activity className="w-3 h-3" />
+            </button>
+            <button 
+              onClick={() => setActiveTab('chart')}
+              className={`p-1 rounded-md transition-colors ${activeTab === 'chart' ? 'bg-slate-800 text-cyan-400' : 'text-slate-600 hover:text-slate-400'}`}
+            >
+              <LineChartIcon className="w-3 h-3" />
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div className="space-y-1">
-          <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">ADX</p>
-          <p className="text-xl font-mono font-bold text-slate-200 tabular-nums">{(bot.adx ?? 0).toFixed(1)}</p>
-        </div>
-        <div className="space-y-1">
-          <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">Whale</p>
-          <p className="text-xl font-mono font-bold text-slate-200 tabular-nums">{(bot.whale ?? 0).toFixed(2)}x</p>
-        </div>
+      <div className="h-24 mb-6">
+        <AnimatePresence mode="wait">
+          {activeTab === 'info' ? (
+            <motion.div 
+              key="info"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.05 }}
+              className="grid grid-cols-2 gap-4"
+            >
+              <div className="space-y-1">
+                <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">ADX</p>
+                <p className="text-xl font-mono font-bold text-slate-200 tabular-nums">{(bot.adx ?? 0).toFixed(1)}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">Whale</p>
+                <p className="text-xl font-mono font-bold text-slate-200 tabular-nums">{(bot.whale ?? 0).toFixed(2)}x</p>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="chart"
+              initial={{ opacity: 0, scale: 1.05 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="h-full w-full"
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history}>
+                  <XAxis dataKey="day" hide />
+                  <YAxis hide domain={['dataMin - 10', 'dataMax + 10']} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '8px', fontSize: '9px' }}
+                    itemStyle={{ color: '#22d3ee' }}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="pl" 
+                    stroke="#22d3ee" 
+                    strokeWidth={2} 
+                    dot={false}
+                    animationDuration={1000}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+              <p className="text-[8px] text-center text-slate-600 uppercase tracking-widest mt-2 font-bold">7D P/L Trend</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <div className="space-y-3 pt-4 border-t border-slate-800/60">
@@ -152,7 +241,10 @@ export default function App() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showQuickTrade, setShowQuickTrade] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showInfra, setShowInfra] = useState(false);
+  const [selectedAnalysisBot, setSelectedAnalysisBot] = useState<Bot | null>(null);
   const [botSettings, setBotSettings] = useState<Record<string, { threshold: number }>>({});
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [manualTrade, setManualTrade] = useState({ symbol: 'XAUUSD', lot: 0.01 });
   const ws = useRef<WebSocket | null>(null);
   const prevBotsRef = useRef<Bot[]>([]);
@@ -235,6 +327,33 @@ export default function App() {
   }, [data, botSettings]);
 
   useEffect(() => {
+    // Mock Log Stream Simulation
+    const botIds = ['alpha', 'beta', 'gamma', 'epsilon', 'sergiu'];
+    const levels: LogEntry['level'][] = ['info', 'warn', 'error', 'trade'];
+    const messages = [
+      "Scanning market for liquidity gaps...",
+      "ADX trend confirmed on H1 timeframe.",
+      "Adjusting trailing stop for active position.",
+      "Network latency spike detected (142ms).",
+      "Order execution successful at 2642.45.",
+      "Entering cooldown period after target reached."
+    ];
+
+    const interval = setInterval(() => {
+      const newLog: LogEntry = {
+        id: Math.random().toString(36).substring(7),
+        timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        botId: botIds[Math.floor(Math.random() * botIds.length)],
+        level: levels[Math.floor(Math.random() * levels.length)],
+        message: messages[Math.floor(Math.random() * messages.length)]
+      };
+      setLogs(prev => [newLog, ...prev].slice(0, 50));
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/feed`;
     
@@ -282,6 +401,14 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-12">
+          <button 
+            onClick={() => setShowInfra(true)}
+            className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all flex items-center gap-2 group"
+            title="System Diagnostics"
+          >
+            <Cpu className="w-5 h-5 group-hover:text-cyan-400" />
+            <span className="text-[10px] font-black uppercase tracking-widest hidden xl:inline">Diag</span>
+          </button>
           <button 
             onClick={() => setShowSettings(true)}
             className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all"
@@ -355,11 +482,18 @@ export default function App() {
 
       <main className="max-w-[1700px] mx-auto p-10 space-y-12">
         {/* KPI SECTION */}
-        <section className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <section className="grid grid-cols-1 md:grid-cols-5 gap-6">
           {[
             { label: 'Active Engines', value: (data.bots ?? []).filter(b => b.status === 'ÎN TRADE').length, icon: Cpu, color: 'text-cyan-400' },
             { label: 'Daily Net', value: '+$142.20', icon: TrendingUp, color: 'text-emerald-400' },
-            { label: 'System Load', value: '14%', icon: Activity, color: 'text-blue-400' },
+            { 
+              label: 'Market Sentiment', 
+              value: data.sentiment?.label ?? 'STABLE', 
+              icon: Waves, 
+              color: data.sentiment?.label === 'EXTREME FEAR' ? 'text-rose-400' : 'text-blue-400',
+              subValue: `VIX: ${data.sentiment?.vix ?? 18.2}`
+            },
+            { label: 'System Load', value: '14%', icon: Activity, color: 'text-slate-400' },
             { label: 'Link Ping', value: '12ms', icon: Network, color: 'text-purple-400' },
           ].map((kpi, i) => (
             <div key={i} className="bg-slate-900/30 border border-slate-800/60 rounded-2xl p-6">
@@ -367,7 +501,10 @@ export default function App() {
                 <kpi.icon className={`w-4 h-4 ${kpi.color}`} />
                 <span className="text-[9px] font-bold uppercase tracking-widest text-slate-600">{kpi.label}</span>
               </div>
-              <p className={`text-2xl font-mono font-bold ${kpi.color} tabular-nums`}>{kpi.value}</p>
+              <p className={`text-2xl font-mono font-black ${kpi.color} tabular-nums`}>{kpi.value}</p>
+              {'subValue' in kpi && (
+                <p className="text-[9px] font-mono text-slate-600 mt-2">{kpi.subValue}</p>
+              )}
             </div>
           ))}
         </section>
@@ -381,7 +518,7 @@ export default function App() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
             <AnimatePresence mode="popLayout">
               {(data.bots ?? []).map((bot) => (
-                <BotCard key={bot.id} bot={bot} />
+                <BotCard key={bot.id} bot={bot} onAnalyze={setSelectedAnalysisBot} />
               ))}
             </AnimatePresence>
           </div>
@@ -553,6 +690,64 @@ export default function App() {
             </div>
           </section>
         </div>
+
+        {/* REAL-TIME SYSTEM LOGS */}
+        <section className="space-y-8">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Monitor className="w-5 h-5 text-cyan-400" />
+              <h2 className="text-lg font-black text-white uppercase tracking-wider">System Execution Logs</h2>
+            </div>
+            <div className="flex gap-4">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Live Stream</span>
+              </div>
+              <button 
+                onClick={() => setLogs([])}
+                className="text-[9px] font-bold text-slate-600 hover:text-slate-400 uppercase tracking-widest transition-colors"
+              >
+                Clear Console
+              </button>
+            </div>
+          </div>
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-6 h-[300px] overflow-hidden flex flex-col shadow-inner backdrop-blur-md">
+            <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-4">
+              {logs.length === 0 ? (
+                <div className="h-full flex items-center justify-center">
+                  <p className="text-slate-700 font-mono text-[10px] uppercase tracking-widest italic">Awaiting secure stream initialization...</p>
+                </div>
+              ) : (
+                logs.map((log) => (
+                  <div key={log.id} className="flex gap-4 font-mono text-[11px] leading-relaxed group">
+                    <span className="text-slate-600 shrink-0 select-none">[{log.timestamp}]</span>
+                    <span className={`shrink-0 font-bold uppercase w-16 ${
+                      log.botId === 'alpha' ? 'text-cyan-400' :
+                      log.botId === 'gamma' ? 'text-purple-400' :
+                      'text-slate-400'
+                    }`}>{log.botId}</span>
+                    <span className={`shrink-0 font-bold uppercase w-12 ${
+                      log.level === 'error' ? 'text-rose-500' :
+                      log.level === 'warn' ? 'text-amber-500' :
+                      log.level === 'trade' ? 'text-emerald-400' : 'text-slate-600'
+                    }`}>{log.level}</span>
+                    <span className="text-slate-400 group-hover:text-slate-200 transition-colors">{log.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="mt-4 pt-4 border-t border-slate-800/40 flex justify-between items-center">
+              <div className="text-[9px] font-mono text-slate-600">
+                PROCESSED BY TRINITY ENGINE V4 // NODE: VPS-EU-01
+              </div>
+              <div className="flex gap-2">
+                <div className="w-1 h-1 bg-cyan-500/20 rounded-full" />
+                <div className="w-1 h-1 bg-cyan-500/40 rounded-full" />
+                <div className="w-1 h-1 bg-cyan-500/60 rounded-full animate-pulse" />
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
 
       <footer className="border-t border-slate-800/50 p-10 bg-slate-950/90 text-center">
@@ -705,7 +900,106 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* BOT SETTINGS MODAL */}
+      {/* BOT ANALYSIS MODAL */}
+      <AnimatePresence>
+        {selectedAnalysisBot && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedAnalysisBot(null)}
+              className="absolute inset-0 bg-slate-950/95 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 40 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 40 }}
+              className="relative w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-[3rem] shadow-2xl overflow-hidden"
+            >
+              <div className="p-12">
+                <div className="flex justify-between items-start mb-12">
+                  <div className="flex items-center gap-6">
+                    <div className={`w-16 h-16 rounded-3xl flex items-center justify-center border ${
+                      selectedAnalysisBot.status === 'ÎN TRADE' ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-slate-800 border-slate-700 text-slate-500'
+                    }`}>
+                      <TrendingUp className="w-8 h-8" />
+                    </div>
+                    <div>
+                      <h3 className="text-3xl font-black text-white uppercase tracking-tighter italic">{selectedAnalysisBot.name}</h3>
+                      <p className="text-[10px] text-slate-500 font-mono font-black uppercase tracking-[0.4em] mt-1">Deep Intelligence Analytics // 30D Performance</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setSelectedAnalysisBot(null)} className="p-3 hover:bg-slate-800 rounded-2xl transition-colors">
+                    <X className="w-8 h-8 text-slate-600" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-4 gap-6 mb-12">
+                  <div className="bg-slate-950/50 border border-slate-800/40 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-black uppercase tracking-widest mb-3 text-center">Winning Ratio</p>
+                    <p className="text-3xl font-mono font-black text-emerald-400 text-center">68.4%</p>
+                  </div>
+                  <div className="bg-slate-950/50 border border-slate-800/40 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-black uppercase tracking-widest mb-3 text-center">Peak Drawdown</p>
+                    <p className="text-3xl font-mono font-black text-rose-500 text-center">-14.2%</p>
+                  </div>
+                  <div className="bg-slate-950/50 border border-slate-800/40 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-black uppercase tracking-widest mb-3 text-center">Avg Trade Time</p>
+                    <p className="text-3xl font-mono font-black text-slate-200 text-center">4.2H</p>
+                  </div>
+                  <div className="bg-slate-950/50 border border-slate-800/40 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-black uppercase tracking-widest mb-3 text-center">Total Factor</p>
+                    <p className="text-3xl font-mono font-black text-cyan-400 text-center">2.41</p>
+                  </div>
+                </div>
+
+                <div className="h-[350px] w-full bg-slate-950/30 border border-slate-800/40 rounded-[2rem] p-10 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={[
+                      { day: '1', pl: 10 }, { day: '5', pl: 45 }, { day: '10', pl: 32 },
+                      { day: '15', pl: 88 }, { day: '20', pl: 72 }, { day: '25', pl: 124 },
+                      { day: '30', pl: 156 }
+                    ]}>
+                      <defs>
+                        <linearGradient id="colorAnalysis" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                          <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                      <XAxis dataKey="day" hide />
+                      <YAxis stroke="#475569" fontSize={10} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v}`} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #1e293b', borderRadius: '12px' }}
+                        itemStyle={{ color: '#10b981' }}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="pl" 
+                        stroke="#10b981" 
+                        strokeWidth={4} 
+                        fillOpacity={1} 
+                        fill="url(#colorAnalysis)" 
+                        animationDuration={1500}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="mt-12 flex justify-between items-center text-[10px] font-black uppercase tracking-[0.3em] text-slate-700">
+                  <span>Engine: Trinity Kernel v4.2 // Optimized for {selectedAnalysisBot.bias}</span>
+                  <div className="flex gap-4">
+                    <span className="text-slate-600">Sample Size: 242 Trades</span>
+                    <span className="text-cyan-500/50">Verified Strategy</span>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {showSettings && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
@@ -765,6 +1059,98 @@ export default function App() {
                 >
                   Save Configuration
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* INFRASTRUCTURE MODAL */}
+      <AnimatePresence>
+        {showInfra && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowInfra(false)}
+              className="absolute inset-0 bg-slate-950/90 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-[2.5rem] shadow-[0_0_50px_rgba(0,0,0,0.5)] overflow-hidden"
+            >
+              <div className="p-10">
+                <div className="flex justify-between items-center mb-10">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-cyan-500/10 rounded-2xl">
+                      <Cpu className="w-6 h-6 text-cyan-400" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-white uppercase tracking-wider">Infrastructure Node Diagnostics</h3>
+                      <p className="text-[10px] text-slate-500 font-mono uppercase tracking-[0.2em]">Live system telemetry // ID: VPS-EU-FRA-01</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowInfra(false)} className="p-2 hover:bg-slate-800 rounded-xl transition-colors">
+                    <X className="w-6 h-6 text-slate-500 hover:text-white" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-8 mb-10">
+                  <div className="bg-slate-950/50 border border-slate-800/50 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-bold uppercase tracking-[0.3em] mb-4">cTrader Link Protocol</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-mono text-cyan-400 font-bold">{data.infrastructure?.ctrader_code}</span>
+                      <div className="px-2 py-1 bg-emerald-500/10 text-emerald-400 text-[8px] font-black rounded uppercase">Verified</div>
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/50 border border-slate-800/50 p-6 rounded-3xl">
+                    <p className="text-[9px] text-slate-600 font-bold uppercase tracking-[0.3em] mb-4">API Core Uptime</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-mono text-slate-200 font-bold">{data.infrastructure?.uptime}</span>
+                      <Clock className="w-4 h-4 text-slate-700" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-8">
+                  <section>
+                    <h4 className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mb-4">PM2 Process Clusters</h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      {(data.infrastructure?.pm2_processes ?? []).map((proc, i) => (
+                        <div key={i} className="flex items-center justify-between p-4 bg-slate-900/50 border border-slate-800/40 rounded-2xl">
+                          <span className="text-[11px] font-bold text-slate-300">{proc.name}</span>
+                          <div className="flex gap-4">
+                            <span className="text-[10px] font-mono text-slate-600">{proc.mem}</span>
+                            <span className="text-[10px] font-mono text-cyan-500/80">{proc.cpu}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section>
+                    <h4 className="text-[10px] text-rose-500/80 font-black uppercase tracking-[0.3em] mb-4">Recent Exception Stack</h4>
+                    <div className="bg-slate-950/80 border border-slate-800/60 rounded-2xl p-6 font-mono text-[10px] text-slate-500 space-y-2 overflow-y-auto max-h-32 custom-scrollbar">
+                      {(data.infrastructure?.error_logs ?? []).map((log, i) => (
+                        <div key={i} className="flex gap-3">
+                          <span className="text-rose-900 shrink-0 select-none">!!</span>
+                          <span className="leading-relaxed">{log}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+
+                <div className="mt-10 pt-8 border-t border-slate-800/40 flex justify-between items-center text-[9px] text-slate-700 font-bold uppercase tracking-widest">
+                  <span>Trinity Diagnostic Engine v1.2</span>
+                  <span className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                    Kernel Stable
+                  </span>
+                </div>
               </div>
             </motion.div>
           </div>
