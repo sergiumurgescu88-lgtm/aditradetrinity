@@ -77,7 +77,8 @@ app.add_middleware(
 class TrinityState:
     def __init__(self):
         self.data = {
-            "account": {"equity": 0.0, "balance": 0.0, "currency": "USD"},
+            "account": {"equity": 0.0, "balance": 0.0, "currency": "USD", "margin_level": 2500.0},
+            "risk": {"total_exposure": 0.0, "margin_usage": "2.4%", "risk_score": "LOW"},
             "bots": [],
             "recent_trades": [],
             "sentiment": {"vix": 18.2, "dxy": 104.15, "label": "STABLE"},
@@ -90,16 +91,101 @@ class TrinityState:
                     {"name": "bot-gamma", "mem": "92MB", "cpu": "4%"},
                     {"name": "bot-epsilon", "mem": "85MB", "cpu": "0.5%"}
                 ],
-                "error_logs": [
-                    "2026-10-02 10:14:22: ProtoOAGetAccountEntitiesReq timeout",
-                    "2026-10-02 09:45:11: SSL Handshake failure on live.ctraderapi.com:5035",
-                    "2026-10-02 08:30:05: Local JSON reporter: [Errno 28] No space left on device (mock)"
-                ]
+                "error_logs": []
             },
-            "api_status": "initializing"
+            "api_status": "initializing",
+            "market_news": [
+                {"id": 1, "title": "FED signals potential rate pause in upcoming December meeting", "source": "Reuters", "time": "2m ago"},
+                {"id": 2, "title": "Gold (XAUUSD) hits new ATH amid geopolitical tensions in Middle East", "source": "Bloomberg", "time": "15m ago"},
+                {"id": 3, "title": "NVIDIA earnings beat expectations, AI sector rallies", "source": "CNBC", "time": "45m ago"}
+            ],
+            "order_book": {
+                "symbol": "XAUUSD",
+                "bids": [],
+                "asks": []
+            }
         }
         self.client = None
         self.raw_positions = [] 
+
+    def update_order_book(self):
+        """Simulează adâncimea pieței (L2 Data)."""
+        import random
+        base_price = 2650.0 if self.data["order_book"]["symbol"] == "XAUUSD" else 1.0850
+        
+        # Generăm 10 nivele de bids (cumpărare)
+        bids = []
+        cumulative_bid = 0
+        for i in range(1, 11):
+            size = random.uniform(5.0, 50.0)
+            cumulative_bid += size
+            bids.append({
+                "price": round(base_price - (i * 0.05), 2),
+                "size": round(size, 2),
+                "total": round(cumulative_bid, 2)
+            })
+            
+        # Generăm 10 nivele de asks (vânzare)
+        asks = []
+        cumulative_ask = 0
+        for i in range(1, 11):
+            size = random.uniform(5.0, 50.0)
+            cumulative_ask += size
+            asks.append({
+                "price": round(base_price + (i * 0.05), 2),
+                "size": round(size, 2),
+                "total": round(cumulative_ask, 2)
+            })
+            
+        self.data["order_book"]["bids"] = bids
+        self.data["order_book"]["asks"] = asks
+
+    def update_market_news(self):
+        """Simulează sau preia știri financiare în timp real."""
+        # Aici s-ar putea integra un API real precum Finnhub sau NewsAPI
+        # Pentru demo, rotim știrile pentru a simula un flux live
+        import random
+        headlines = [
+            {"title": "ECB considering faster rate cuts as inflation cools", "source": "WSJ"},
+            {"title": "OPEC+ extends production cuts into Q1 2027", "source": "Reuters"},
+            {"title": "Bitcoin nears $100k mark as institutional flow increases", "source": "Coindesk"},
+            {"title": "US Jobless claims lower than expected, Dollar strengthens", "source": "MarketWatch"},
+            {"title": "Tech sell-off intensifies as yield curve steepens", "source": "Bloomberg"}
+        ]
+        
+        if random.random() < 0.1: # 10% șansă de update la fiecare loop
+            new_story = random.choice(headlines)
+            new_story["id"] = random.randint(100, 999)
+            new_story["time"] = "Just now"
+            # Adăugăm la început și păstrăm ultimele 5
+            self.data["market_news"] = [new_story] + self.data["market_news"][:4]
+
+    def calculate_risk_metrics(self):
+        """Calculează expunerea totală și riscul contului."""
+        total_lots = sum(bot.get("lot", 0) for bot in self.data["bots"] if bot.get("status") == "ÎN TRADE")
+        self.data["risk"]["total_exposure"] = round(total_lots, 2)
+        
+        # Simulare Margin Level din cTrader
+        self.data["account"]["margin_level"] = round(2500.0 + (self.data["account"]["equity"] * 0.1), 2)
+        
+        # Scor de risc bazat pe expunere și VIX
+        vix = self.data["sentiment"]["vix"]
+        if total_lots > 2.0 or vix > 30 or self.data["account"]["margin_level"] < 500:
+            self.data["risk"]["risk_score"] = "CRITICAL"
+        elif total_lots > 1.0 or vix > 22 or self.data["account"]["margin_level"] < 1000:
+            self.data["risk"]["risk_score"] = "HIGH"
+        elif total_lots > 0.5:
+            self.data["risk"]["risk_score"] = "MEDIUM"
+        else:
+            self.data["risk"]["risk_score"] = "LOW"
+
+    def get_market_specs(self):
+        """Date despre simboluri (inspirat din ctrader-python-algo-samples)."""
+        self.data["market_specs"] = [
+            {"symbol": "XAUUSD", "spread": 12, "pip_value": "$1.00", "min_lot": 0.01},
+            {"symbol": "EURUSD", "spread": 2, "pip_value": "$0.10", "min_lot": 0.01},
+            {"symbol": "BTCUSD", "spread": 250, "pip_value": "$0.01", "min_lot": 0.01}
+        ]
 
     def update_sentiment(self):
         """Simulează fluctuațiile sentimentului de piață."""
@@ -197,6 +283,10 @@ async def unity_background_task():
         try:
             state_manager.update_bot_scanning_data()
             state_manager.update_sentiment()
+            state_manager.calculate_risk_metrics()
+            state_manager.get_market_specs()
+            state_manager.update_market_news()
+            state_manager.update_order_book()
             await state_manager.fetch_ctrader_data()
             await ws_manager.broadcast(state_manager.data)
         except Exception as e:
