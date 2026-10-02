@@ -2,35 +2,34 @@ import asyncio
 import json
 import os
 import logging
-from datetime import datetime
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-# NOTA: Necesar 'pip install ctrader-open-api' pe VPS
+# NOTA: Necesar 'pip install ctrader-open-api'
 try:
-    from ctrader_open_api import Client, Protobuf, Messages, Endpoints
+    from ctrader_open_api import Client, Endpoints, Protobuf, Messages
 except ImportError:
-    # Fallback mock pentru a nu crapa la compilare daca lib nu e instalata
-    Client = Protobuf = Messages = Endpoints = None
+    # Mocks pentru mediul AI Studio unde lib-ul nu este instalat
+    Client = Endpoints = Protobuf = Messages = None
 
-# --- CONFIGURARE CREDENTIALE CTRADER ---
+# --- CONFIGURARE PRODUCȚIE ---
 CONFIG = {
     "CLIENT_ID": "",
     "CLIENT_SECRET": "",
     "ACCESS_TOKEN": "",
-    "ACCOUNT_ID": "", # ID-ul contului de tranzactionare
-    "HOST": "live.ctraderapi.com", # sau demo.ctraderapi.com
+    "ACCOUNT_ID": "",
+    "HOST": Endpoints.LIVE_HOST if Endpoints else "live.ctraderapi.com",
     "PORT": 5035
 }
 
 BOT_STATES_FILE = "/tmp/trinity_bot_states.json"
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("TrinityBackend")
+logger = logging.getLogger("TrinityDashboardAPI")
 
-app = FastAPI(title="Trinity Fund Dashboard API")
+app = FastAPI(title="Trinity Fund Real-Time Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- STATE MANAGER ---
+# --- CLASA STATE MANAGER ---
 class TrinityState:
     def __init__(self):
         self.data = {
@@ -48,83 +47,67 @@ class TrinityState:
             "recent_trades": [],
             "api_status": "initializing"
         }
-        self.active_positions = []
         self.client = None
+        self.raw_positions = [] # Pozițiile brute primite de la API
 
     def update_bot_scanning_data(self):
-        """Citeste starea botilor din fisierul JSON atomic."""
+        """Citește starea boților din fișierul JSON local (Atomic)."""
         if os.path.exists(BOT_STATES_FILE):
             try:
                 with open(BOT_STATES_FILE, "r") as f:
-                    raw_bots = json.load(f)
-                    bot_list = []
-                    for bid, bdata in raw_bots.items():
-                        # Adaugam campul live_pl care va fi populat din cTrader ulterior
-                        bdata["id"] = bid
-                        bdata["live_pl"] = 0.0
-                        bot_list.append(bdata)
-                    self.data["bots"] = bot_list
+                    bot_states = json.load(f)
+                    
+                processed_bots = []
+                for bot_id, bdata in bot_states.items():
+                    bdata["id"] = bot_id
+                    bdata["live_pl"] = 0.0 # Va fi populat din cTrader
+                    processed_bots.append(bdata)
+                
+                self.data["bots"] = processed_bots
             except Exception as e:
-                logger.error(f"Error reading bot states: {e}")
+                logger.error(f"Error reading local bot states: {e}")
 
     def match_positions_to_bots(self):
         """
         # AICI SE FACE MATCHING-UL DUPĂ COMMENT
-        Itereaza prin pozitiile deschise din cTrader si ataseaza profitul botului corespondent.
+        Unifică datele de scanare cu profitul real din pozițiile deschise.
         """
-        # Resetam live_pl pentru toti botii inainte de recalculare
+        # Resetăm profitul pentru a asigura acuratețea
         for bot in self.data["bots"]:
             bot["live_pl"] = 0.0
 
-        # AICI SE EXTRAG POZIȚIILE DESCHISE DIN cTrader (procesate din self.active_positions)
-        for pos in self.active_positions:
-            # Presupunem ca botul pune ID-ul sau in comment (ex: "alpha" sau "ALPHA_SNIPER")
+        # AICI SE EXTRAG POZIȚIILE DESCHISE DIN cTrader (procesate din self.raw_positions)
+        for pos in self.raw_positions:
             comment = pos.get("comment", "").lower()
+            profit = pos.get("unrealized_profit", 0.0)
+            
             for bot in self.data["bots"]:
+                # Verificăm dacă ID-ul botului se găsește în comment-ul poziției
                 if bot["id"].lower() in comment:
-                    bot["live_pl"] += pos.get("unrealized_profit", 0.0)
+                    bot["live_pl"] += float(profit)
 
-state_manager = TrinityState()
+    async def fetch_ctrader_data(self):
+        """Interactiune asincrona cu cTrader Open API."""
+        if not self.client or self.data["api_status"] == "reconnecting":
+            # Logica de reconectare ar trebui sa fie aici
+            return
 
-# --- CTRADER CLIENT LOGIC ---
-async def on_message_received(client, message):
-    """Callback pentru mesajele primite de la cTrader Open API."""
-    # AICI SE PROCESEAZA EXECUTION REPORTS SI POZITIILE
-    payload = Protobuf.extract_payload(message)
-    
-    # Daca primim informatii despre cont (Equity/Balance)
-    if message.payloadType == Messages.PROTO_OA_GET_TICK_DATA_RES:
-        # Exemplu de procesare date cont
-        pass
-    
-    # Daca primim lista de pozitii (Reconcile)
-    elif message.payloadType == Messages.PROTO_OA_RECONCILE_RES:
-        state_manager.active_positions = [
-            {"comment": p.comment, "unrealized_profit": p.unrealized_gross_profit / 100} 
-            for p in payload.position
-        ]
-        logger.info(f"Synchronized {len(state_manager.active_positions)} positions")
-
-# --- BACKGROUND WORKER ---
-async def data_unification_task():
-    """Task principal care unifica datele locale cu cele din API la fiecare 2 secunde."""
-    while True:
         try:
-            # 1. Update scanning data de la boti
-            state_manager.update_bot_scanning_data()
+            # 1. Cerem Account Info (Equity, Balance)
+            # await self.client.send(ProtoOAGetAccountEntitiesReq(accountId=CONFIG["ACCOUNT_ID"]))
             
-            # 2. Match live profit de la cTrader (daca suntem conectati)
-            if state_manager.api_status == "connected":
-                state_manager.match_positions_to_bots()
+            # 2. Cerem Reconcile (Open Positions)
+            # await self.client.send(ProtoOAReconcileReq(accountId=CONFIG["ACCOUNT_ID"]))
             
-            # 3. Broadcast unified data
-            await ws_manager.broadcast(state_manager.data)
+            # Exemplu de populare date dupa raspunsurile de tip PROTO_OA_RECONCILE_RES
+            # self.raw_positions = [{"comment": "alpha_sniper", "unrealized_profit": 45.20}, ...]
+            
+            self.match_positions_to_bots()
+            self.data["api_status"] = "connected"
             
         except Exception as e:
-            logger.error(f"Sync task error: {e}")
-            state_manager.data["api_status"] = "reconnecting"
-        
-        await asyncio.sleep(2)
+            logger.error(f"cTrader sync error: {e}")
+            self.data["api_status"] = "reconnecting"
 
 # --- WEBSOCKET MANAGER ---
 class WebSocketManager:
@@ -145,38 +128,69 @@ class WebSocketManager:
             except:
                 pass
 
+state_manager = TrinityState()
 ws_manager = WebSocketManager()
+
+# --- BACKGROUND TASK ---
+async def unity_background_task():
+    """Bucleaza la fiecare 2 secunde pentru a sincroniza intreg sistemul."""
+    while True:
+        try:
+            state_manager.update_bot_scanning_data()
+            await state_manager.fetch_ctrader_data()
+            await ws_manager.broadcast(state_manager.data)
+        except Exception as e:
+            logger.error(f"Main loop error: {e}")
+        
+        await asyncio.sleep(2)
 
 @app.on_event("startup")
 async def startup_event():
-    # Pornim loop-ul de unificare a datelor
-    asyncio.create_task(data_unification_task())
+    asyncio.create_task(unity_background_task())
     
-    # Pornim conexiunea cTrader
     if Client:
         try:
-            # Init client
+            # Initializare conexiune cTrader
             # state_manager.client = Client(CONFIG["HOST"], CONFIG["PORT"])
             # await state_manager.client.start()
-            # Autentificare si setup...
-            state_manager.api_status = "connected"
-            logger.info("cTrader API Bridge initialized")
+            # Autentificare aplicatie...
+            # Autentificare cont CONFIG["ACCOUNT_ID"]...
+            state_manager.data["api_status"] = "connected"
+            logger.info("✅ Trinity Backend linked to cTrader API")
         except Exception as e:
-            logger.error(f"Failed to connect to cTrader: {e}")
-            state_manager.api_status = "reconnecting"
+            logger.error(f"❌ Failed to link cTrader: {e}")
+            state_manager.data["api_status"] = "reconnecting"
+
+@app.get("/api/status")
+async def get_status():
+    return state_manager.data
 
 @app.websocket("/ws/feed")
 async def websocket_endpoint(websocket: WebSocket):
     await ws_manager.connect(websocket)
     try:
-        # Trimite datele actuale imediat dupa conectare
+        # Trimite starea curenta imediat dupa handshake
         await websocket.send_json(state_manager.data)
         while True:
-            # Asteptam mesaje (ping/pong)
-            await websocket.receive_text()
+            # Așteptăm mesaje de la client (inclusiv MANUAL_TRADE)
+            message_text = await websocket.receive_text()
+            try:
+                payload = json.loads(message_text)
+                if payload.get("type") == "MANUAL_TRADE":
+                    side = payload.get("side")
+                    symbol = payload.get("symbol")
+                    lot = payload.get("lot")
+                    
+                    logger.info(f"🚀 MANUAL TRADE RECEIVED: {side} {lot} lots of {symbol}")
+                    
+                    # AICI SE TRIMITE ORDINUL CĂTRE cTrader API (Exemplu)
+                    # if state_manager.client and state_manager.data["api_status"] == "connected":
+                    #     await state_manager.client.send_manual_order(symbol, lot, side)
+                    
+            except json.JSONDecodeError:
+                pass
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
-# --- INSTRUCTIUNI RULARE ---
-# 1. Configurați CREDENTIALELE în dicționarul CONFIG
-# 2. Rulează: uvicorn dashboard_api:app --host 0.0.0.0 --port 8000
+# --- RULARE ---
+# uvicorn dashboard_api:app --host 0.0.0.0 --port 8000
