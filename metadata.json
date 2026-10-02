@@ -1,0 +1,8 @@
+{
+  "name": "Trinity Fund Trading Dashboard",
+  "description": "Professional trading dashboard for monitoring Trinity Fund bots with real-time WebSocket updates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

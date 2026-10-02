@@ -1,11 +1,30 @@
-<div align="center">
+# TRINITY FUND DASHBOARD
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Professional terminal for trading bot monitoring.
 
-  <h1>Built with AI Studio</h2>
+## 🚀 Setup & Development
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+2. **Start development server:**
+   ```bash
+   npm run dev
+   ```
 
-</div>
+3. **Build for production:**
+   ```bash
+   npm run build
+   ```
+
+## 🛠 Tech Stack
+- **Frontend:** React 19, Vite, Tailwind CSS 4, Motion/React, Lucide Icons.
+- **Backend:** FastAPI (Python) or Node.js (Express).
+- **Protocol:** WebSockets for real-time data streaming.
+
+## 📁 Structure
+- `/src`: React components and logic.
+- `dashboard_api.py`: Python FastAPI backend.
+- `server.ts`: Node.js dev proxy server.
