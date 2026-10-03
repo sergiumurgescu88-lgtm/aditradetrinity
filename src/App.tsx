@@ -896,8 +896,8 @@ export default function App() {
       {/* HEADER */}
       <header className="h-20 border-b border-slate-200 dark:border-slate-800/60 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between px-4 md:px-10 shadow-sm dark:shadow-2xl">
         <div className="flex items-center gap-2 md:gap-4">
-          <div className="p-2 bg-gradient-to-br from-cyan-600 to-emerald-600 rounded-lg">
-            <Shield className="w-5 h-5 md:w-6 md:h-6 text-white" />
+          <div className="p-1 bg-slate-900 rounded-lg overflow-hidden border border-slate-800">
+            <img src="/src/assets/images/trinity_fund_logo_1791015441723.jpg" alt="Trinity Logo" className="w-8 h-8 md:w-10 md:h-10 object-contain" />
           </div>
           <div className="flex flex-col">
             <h1 className="text-sm md:text-lg font-black tracking-[0.1em] md:tracking-[0.2em] text-cyan-600 dark:text-cyan-400 uppercase glow-text-cyan">Trinity Terminal</h1>
