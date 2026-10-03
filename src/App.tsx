@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as d3 from 'd3';
 import { 
   Shield, 
   Activity, 
@@ -20,7 +21,9 @@ import {
   X,
   Sun,
   Moon,
-  Newspaper
+  Newspaper,
+  Search,
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -53,6 +56,17 @@ const equityHistory = [
   { time: '14:00', equity: 10647 },
 ];
 
+const dailyNetTrend = [
+  { day: 1, net: 45 }, { day: 2, net: 52 }, { day: 3, net: 48 }, { day: 4, net: 61 }, 
+  { day: 5, net: 55 }, { day: 6, net: 67 }, { day: 7, net: 72 }, { day: 8, net: 68 }, 
+  { day: 9, net: 82 }, { day: 10, net: 95 }, { day: 11, net: 88 }, { day: 12, net: 102 }, 
+  { day: 13, net: 98 }, { day: 14, net: 115 }, { day: 15, net: 125 }, { day: 16, net: 120 }, 
+  { day: 17, net: 132 }, { day: 18, net: 145 }, { day: 19, net: 138 }, { day: 20, net: 152 }, 
+  { day: 21, net: 165 }, { day: 22, net: 158 }, { day: 23, net: 172 }, { day: 24, net: 185 }, 
+  { day: 25, net: 178 }, { day: 26, net: 192 }, { day: 27, net: 205 }, { day: 28, net: 198 }, 
+  { day: 29, net: 212 }, { day: 30, net: 225 }
+];
+
 // --- TYPES ---
 interface Bot {
   id: string;
@@ -63,6 +77,7 @@ interface Bot {
   lot: number;
   bias: string;
   live_pl: number;
+  reported_pl?: number;
 }
 
 interface TradeHistory {
@@ -82,6 +97,7 @@ interface Account {
   equity: number;
   balance: number;
   currency: string;
+  margin_level?: number;
 }
 
 interface DashboardData {
@@ -140,6 +156,74 @@ interface LogEntry {
   message: string;
 }
 
+// --- CUSTOM HOOKS ---
+const useWebSocket = (url: string) => {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [status, setStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const ws = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<number>(0);
+  const backoffRef = useRef<number>(3000);
+
+  const connect = useCallback(() => {
+    if (ws.current?.readyState === WebSocket.OPEN) return;
+
+    setStatus('reconnecting');
+    ws.current = new WebSocket(url);
+
+    ws.current.onopen = () => {
+      setStatus('connected');
+      backoffRef.current = 3000; // Reset backoff on success
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
+
+    ws.current.onmessage = (event) => {
+      try {
+        const parsedData = JSON.parse(event.data);
+        setData(parsedData);
+      } catch (err) {
+        console.error('Terminal Data Stream Parse Error:', err);
+      }
+    };
+
+    ws.current.onclose = () => {
+      setStatus('reconnecting');
+      
+      // Exponential backoff capped at 30 seconds
+      reconnectTimeoutRef.current = window.setTimeout(() => {
+        connect();
+        backoffRef.current = Math.min(backoffRef.current * 1.5, 30000);
+      }, backoffRef.current);
+    };
+
+    ws.current.onerror = (err) => {
+      console.error('Socket Protocol Error:', err);
+      ws.current?.close();
+    };
+  }, [url]);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+      }
+      ws.current?.close();
+    };
+  }, [connect]);
+
+  const sendMessage = useCallback((message: any) => {
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(message));
+    } else {
+      console.warn('Cannot send message: WebSocket is not open.');
+    }
+  }, []);
+
+  return { data, status, sendMessage, ws: ws.current };
+};
+
 // --- LOG LINE COMPONENT (OPTIMIZED) ---
 const LogLine = React.memo(({ log }: { log: LogEntry }) => {
   return (
@@ -162,6 +246,86 @@ const LogLine = React.memo(({ log }: { log: LogEntry }) => {
     </div>
   );
 });
+
+const PerformanceMetricsTable = ({ bots }: { bots: Bot[] }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  const filteredBots = bots.filter(bot => 
+    bot.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // Mock metrics for demo
+  const getMetrics = (botId: string) => {
+    const seed = botId.length;
+    return {
+      winRate: (60 + (seed % 15)).toFixed(1) + '%',
+      profitFactor: (1.5 + (seed % 10) / 10).toFixed(2),
+      avgWin: '$' + (40 + (seed % 20)).toFixed(2),
+      avgLoss: '-$' + (25 + (seed % 10)).toFixed(2)
+    };
+  };
+
+  return (
+    <section>
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8 px-2">
+        <div className="flex items-center gap-3">
+          <TrendingUp className="w-5 h-5 text-emerald-400" />
+          <h2 className="text-sm md:text-lg font-black text-slate-900 dark:text-white uppercase tracking-wider">Performance Metrics</h2>
+        </div>
+        <div className="relative w-full sm:w-auto">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+          <input 
+            type="text" 
+            placeholder="Search bot..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="bg-slate-100 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 rounded-xl pl-9 pr-4 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-700 dark:text-slate-300 focus:outline-none focus:border-cyan-500/50 transition-all w-full sm:w-48"
+          />
+        </div>
+      </div>
+      <div className="bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800/80 rounded-2xl overflow-x-auto shadow-sm dark:shadow-none">
+        <table className="w-full text-left min-w-[600px]">
+          <thead>
+            <tr className="bg-slate-50 dark:bg-slate-900/30 border-b border-slate-200 dark:border-slate-800/60 text-[9px] uppercase tracking-widest text-slate-500 dark:text-slate-600">
+              <th className="px-6 py-4">Bot Name</th>
+              <th className="px-6 py-4 text-center">Win Rate</th>
+              <th className="px-6 py-4 text-center">Profit Factor</th>
+              <th className="px-6 py-4 text-center">Avg Win</th>
+              <th className="px-6 py-4 text-center">Avg Loss</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
+            {filteredBots.map((bot) => {
+              const m = getMetrics(bot.id);
+              return (
+                <tr key={bot.id} className="hover:bg-cyan-500/[0.02] dark:hover:bg-cyan-500/[0.05] transition-colors group">
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-300">{bot.name}</span>
+                      <span className="text-[8px] font-mono text-slate-400 uppercase">Engine v4.2</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                    <span className="text-xs font-mono font-bold text-emerald-500 dark:text-emerald-400">{m.winRate}</span>
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                    <span className="text-xs font-mono font-bold text-cyan-600 dark:text-cyan-400">{m.profitFactor}</span>
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                    <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300">{m.avgWin}</span>
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                    <span className="text-xs font-mono font-bold text-rose-500">{m.avgLoss}</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+};
 
 const MarketDepth = ({ orderBook, isDarkMode }: { orderBook?: DashboardData['order_book'], isDarkMode: boolean }) => {
   if (!orderBook) return null;
@@ -224,12 +388,166 @@ const MarketDepth = ({ orderBook, isDarkMode }: { orderBook?: DashboardData['ord
   );
 };
 
+const VolatilityHeatmap = ({ isDarkMode }: { isDarkMode: boolean }) => {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!svgRef.current) return;
+
+    const margin = { top: 40, right: 30, bottom: 40, left: 80 };
+    const width = 480 - margin.left - margin.right;
+    const height = 320 - margin.top - margin.bottom;
+
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+
+    const g = svg
+      .append("g")
+      .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const myGroups = ["Alpha", "Beta", "Gamma", "Epsilon", "Sergiu"];
+    const myVars = ["Low Vol", "Med Vol", "High Vol", "Extreme Vol"];
+
+    const x = d3.scaleBand()
+      .range([0, width])
+      .domain(myGroups)
+      .padding(0.08);
+
+    g.append("g")
+      .style("font-size", 10)
+      .style("font-family", "JetBrains Mono")
+      .attr("transform", `translate(0,${height})`)
+      .call(d3.axisBottom(x).tickSize(0))
+      .select(".domain").remove();
+
+    const y = d3.scaleBand()
+      .range([height, 0])
+      .domain(myVars)
+      .padding(0.08);
+
+    g.append("g")
+      .style("font-size", 10)
+      .style("font-family", "JetBrains Mono")
+      .call(d3.axisLeft(y).tickSize(0))
+      .select(".domain").remove();
+
+    // Enhanced color scale - Cyan to Emerald
+    const myColor = d3.scaleSequential()
+      .interpolator(d3.interpolateSinebow) // Using a more vibrant interpolator
+      .domain([100, 1]); // Reversed for better effect
+
+    const data: any[] = [];
+    myGroups.forEach(gr => {
+      myVars.forEach(v => {
+        // Bias data for more "realistic" correlation
+        let bias = 50;
+        if (gr === "Alpha" && v === "High Vol") bias = 85;
+        if (gr === "Gamma" && v === "Low Vol") bias = 90;
+        if (gr === "Sergiu" && v === "Extreme Vol") bias = 75;
+        
+        data.push({ 
+          group: gr, 
+          variable: v, 
+          value: Math.min(100, Math.max(0, bias + (Math.random() * 30 - 15))) 
+        });
+      });
+    });
+
+    const tooltip = d3.select(tooltipRef.current);
+
+    g.selectAll()
+      .data(data, (d: any) => d.group + ':' + d.variable)
+      .enter()
+      .append("rect")
+      .attr("x", (d: any) => x(d.group)!)
+      .attr("y", (d: any) => y(d.variable)!)
+      .attr("rx", 6)
+      .attr("ry", 6)
+      .attr("width", x.bandwidth())
+      .attr("height", y.bandwidth())
+      .style("fill", (d: any) => d3.interpolateGnBu(d.value / 100))
+      .style("stroke-width", 2)
+      .style("stroke", "none")
+      .style("opacity", 0.8)
+      .on("mouseover", function(event, d: any) {
+        d3.select(this).style("opacity", 1).style("stroke", "#22d3ee");
+        tooltip.style("opacity", 1)
+          .html(`
+            <div class="text-[10px] font-bold text-white uppercase tracking-wider">${d.group} // ${d.variable}</div>
+            <div class="text-xs font-mono text-cyan-400 mt-1">Efficacy: ${d.value.toFixed(1)}%</div>
+          `)
+          .style("left", (event.pageX + 10) + "px")
+          .style("top", (event.pageY - 28) + "px");
+      })
+      .on("mouseleave", function() {
+        d3.select(this).style("opacity", 0.8).style("stroke", "none");
+        tooltip.style("opacity", 0);
+      });
+
+    // Add legend
+    const legendWidth = 200;
+    const legendHeight = 8;
+    const legend = svg.append("g")
+      .attr("transform", `translate(${margin.left + (width - legendWidth) / 2}, ${height + margin.top + 30})`);
+
+    const linGrad = svg.append("defs")
+      .append("linearGradient")
+      .attr("id", "heatmap-gradient")
+      .attr("x1", "0%").attr("y1", "0%")
+      .attr("x2", "100%").attr("y2", "0%");
+
+    linGrad.append("stop").attr("offset", "0%").attr("stop-color", d3.interpolateGnBu(0));
+    linGrad.append("stop").attr("offset", "100%").attr("stop-color", d3.interpolateGnBu(1));
+
+    legend.append("rect")
+      .attr("width", legendWidth)
+      .attr("height", legendHeight)
+      .style("fill", "url(#heatmap-gradient)")
+      .attr("rx", 4);
+
+    legend.append("text")
+      .attr("x", 0)
+      .attr("y", legendHeight + 12)
+      .style("font-size", "8px")
+      .style("font-weight", "bold")
+      .text("MIN EFFICIENCY");
+
+    legend.append("text")
+      .attr("x", legendWidth)
+      .attr("y", legendHeight + 12)
+      .style("text-anchor", "end")
+      .style("font-size", "8px")
+      .style("font-weight", "bold")
+      .text("MAX EFFICIENCY");
+
+    g.selectAll("text").style("fill", isDarkMode ? "#94a3b8" : "#475569");
+    legend.selectAll("text").style("fill", isDarkMode ? "#64748b" : "#94a3b8");
+
+  }, [isDarkMode]);
+
+  return (
+    <div className="bg-white dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800/60 rounded-3xl p-6 h-full flex flex-col justify-center items-center relative group">
+      <div className="flex items-center gap-3 mb-4 w-full px-2">
+        <div className="w-1.5 h-4 bg-cyan-500 rounded-full" />
+        <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider italic">Engine Volatility Matrix</h3>
+      </div>
+      <svg ref={svgRef} width="480" height="320" className="max-w-full h-auto"></svg>
+      <div 
+        ref={tooltipRef} 
+        className="fixed pointer-events-none bg-slate-950/90 border border-slate-800 p-3 rounded-xl shadow-2xl opacity-0 transition-opacity duration-200 z-[200] backdrop-blur-md"
+      ></div>
+    </div>
+  );
+};
+
 // --- COMPONENTS ---
-const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }) => {
-  const isInTrade = bot.status === 'ÎN TRADE';
+const BotCard = ({ bot, onAnalyze, isPaused, settings, onTogglePause }: { bot: Bot, onAnalyze: (bot: Bot) => void, isPaused: boolean, settings: any, onTogglePause: () => void }) => {
+  const isInTrade = bot.status === 'ÎN TRADE' && !isPaused;
   const isProfit = bot.live_pl > 0;
   const isLoss = bot.live_pl < 0;
   const [activeTab, setActiveTab] = useState<'info' | 'chart'>('info');
+  const drawdownPct = settings?.maxDrawdownPct || 5;
 
   // Mock 7-day history per bot
   const history = [
@@ -248,7 +566,11 @@ const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }
       animate={{ opacity: 1, y: 0 }}
       onClick={() => onAnalyze(bot)}
       className={`bg-white dark:bg-slate-900/40 backdrop-blur-md border rounded-2xl p-6 transition-all duration-300 relative cursor-pointer group/card ${
-        isInTrade ? 'glow-border-cyan border-cyan-500/40' : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+        isPaused 
+          ? 'border-rose-500 shadow-[0_0_15px_rgba(244,63,94,0.3)] ring-1 ring-rose-500' 
+          : isInTrade 
+            ? 'glow-border-cyan border-cyan-500/40' 
+            : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
       }`}
     >
       <div className="flex justify-between items-start mb-6">
@@ -258,9 +580,13 @@ const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className={`px-2.5 py-1 rounded text-[9px] font-black tracking-widest border ${
-            isInTrade ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
+            isPaused 
+              ? 'bg-rose-500 text-white border-rose-400 animate-pulse'
+              : isInTrade 
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
           }`}>
-            {bot.status}
+            {isPaused ? 'PAUSED' : bot.status}
           </div>
           <div className="flex gap-1 bg-slate-100 dark:bg-slate-950/40 p-1 rounded-lg border border-slate-200 dark:border-slate-800/40">
             <button 
@@ -337,6 +663,28 @@ const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }
             {bot.bias}
           </span>
         </div>
+        
+        <div className="flex items-center justify-between pt-1">
+          <div className="flex flex-col">
+            <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">Drawdown Protection</span>
+            <span className="text-[10px] font-mono text-cyan-500 font-bold">{drawdownPct}% Limit</span>
+          </div>
+          <button 
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePause();
+            }}
+            className={`p-1.5 rounded-lg border transition-all ${
+              settings?.autoPauseEnabled 
+                ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' 
+                : 'bg-slate-100 dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400'
+            }`}
+            title={settings?.autoPauseEnabled ? "Protection Active" : "Protection Disabled"}
+          >
+            <ShieldCheck className={`w-3.5 h-3.5 ${settings?.autoPauseEnabled ? 'opacity-100' : 'opacity-30'}`} />
+          </button>
+        </div>
+
         <div className="flex justify-between items-center">
           <span className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase">Live Result</span>
           <span className={`text-base font-mono font-bold tabular-nums ${isProfit ? 'text-emerald-500 dark:text-emerald-400 glow-text-emerald' : isLoss ? 'text-rose-500 dark:text-rose-400' : 'text-slate-400 dark:text-slate-600'}`}>
@@ -349,13 +697,18 @@ const BotCard = ({ bot, onAnalyze }: { bot: Bot, onAnalyze: (bot: Bot) => void }
 };
 
 export default function App() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [connected, setConnected] = useState(false);
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws/feed`;
+  
+  const { data, status, sendMessage } = useWebSocket(wsUrl);
+  const connected = status === 'connected';
+
   const [selectedTrade, setSelectedTrade] = useState<TradeHistory | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showQuickTrade, setShowQuickTrade] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showInfra, setShowInfra] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [selectedAnalysisBot, setSelectedAnalysisBot] = useState<Bot | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -375,10 +728,32 @@ export default function App() {
     }
   }, [isDarkMode]);
 
-  const [botSettings, setBotSettings] = useState<Record<string, { threshold: number }>>({});
+  const [botSettings, setBotSettings] = useState<Record<string, { threshold: number, autoPauseEnabled: boolean, maxDrawdownPct: number }>>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('trinity-bot-settings');
+      return saved ? JSON.parse(saved) : {};
+    }
+    return {};
+  });
+
+  const [pausedBotIds, setPausedBotIds] = useState<Set<string>>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('trinity-paused-bots');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    }
+    return new Set();
+  });
+
+  useEffect(() => {
+    localStorage.setItem('trinity-bot-settings', JSON.stringify(botSettings));
+  }, [botSettings]);
+
+  useEffect(() => {
+    localStorage.setItem('trinity-paused-bots', JSON.stringify(Array.from(pausedBotIds)));
+  }, [pausedBotIds]);
+
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [manualTrade, setManualTrade] = useState({ symbol: 'XAUUSD', lot: 0.01 });
-  const ws = useRef<WebSocket | null>(null);
   const prevBotsRef = useRef<Bot[]>([]);
   const audioContext = useRef<AudioContext | null>(null);
 
@@ -409,17 +784,25 @@ export default function App() {
   };
 
   const sendManualTrade = (side: 'BUY' | 'SELL') => {
-    if (ws.current && connected) {
-      const payload = {
-        type: 'MANUAL_TRADE',
-        side,
-        symbol: manualTrade.symbol,
-        lot: manualTrade.lot
-      };
-      ws.current.send(JSON.stringify(payload));
-      addNotification('info', `REQUEST: Manual ${side} order for ${manualTrade.symbol} sent.`);
-      setShowQuickTrade(false);
-    }
+    const payload = {
+      type: 'MANUAL_TRADE',
+      side,
+      symbol: manualTrade.symbol,
+      lot: manualTrade.lot
+    };
+    sendMessage(payload);
+    addNotification('info', `REQUEST: Manual ${side} order for ${manualTrade.symbol} sent.`);
+    setShowQuickTrade(false);
+  };
+
+  const sendBotCommand = (botId: string, command: string) => {
+    const payload = {
+      type: 'BOT_COMMAND',
+      botId,
+      command
+    };
+    sendMessage(payload);
+    addNotification('warning', `SYSTEM: Sent ${command} signal to ${botId}.`);
   };
 
   const addNotification = (type: Notification['type'], message: string) => {
@@ -440,17 +823,29 @@ export default function App() {
 
     currentBots.forEach(bot => {
       const prevBot = prevBots.find(b => b.id === bot.id);
-      const settings = botSettings[bot.id] || { threshold: -50 }; // Default threshold
+      const settings = botSettings[bot.id] || { threshold: -50, autoPauseEnabled: false, maxDrawdownPct: 5 }; 
+      const currentPL = bot.reported_pl ?? bot.live_pl;
+      const accountBalance = data.account?.balance || 10000;
+      const drawdownPct = (Math.abs(currentPL) / accountBalance) * 100;
 
       if (prevBot) {
         // 1. Detect Status Change to 'IN TRADE'
         if (prevBot.status !== 'ÎN TRADE' && bot.status === 'ÎN TRADE') {
           addNotification('success', `ACTION: ${bot.name} executed a new trade order.`);
         }
-        // 2. Detect Critical P/L Threshold
+        
+        // 2. Detect Critical Drawdown
+        if (settings.autoPauseEnabled && !pausedBotIds.has(bot.id) && currentPL < 0 && drawdownPct >= settings.maxDrawdownPct) {
+          setPausedBotIds(prev => new Set(prev).add(bot.id));
+          sendBotCommand(bot.id, 'PAUSE');
+          addNotification('alert', `SAFETY: Auto-pausing ${bot.name} due to ${drawdownPct.toFixed(1)}% drawdown protection.`);
+          playAlertSound();
+        }
+
+        // 3. Detect Critical P/L Threshold (Legacy absolute check)
         if (bot.live_pl < settings.threshold && prevBot.live_pl >= settings.threshold) {
           addNotification('alert', `CRITICAL: ${bot.name} P/L dropped below $${Math.abs(settings.threshold)} threshold.`);
-          playAlertSound();
+          if (!settings.autoPauseEnabled) playAlertSound();
         }
       }
     });
@@ -485,35 +880,13 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/feed`;
-    
-    const connect = () => {
-      ws.current = new WebSocket(wsUrl);
-      ws.current.onopen = () => setConnected(true);
-      ws.current.onmessage = (e) => {
-        try {
-          setData(JSON.parse(e.data));
-        } catch (err) {
-          console.error("Parse error", err);
-        }
-      };
-      ws.current.onclose = () => {
-        setConnected(false);
-        setTimeout(connect, 3000);
-      };
-    };
-
-    connect();
-    return () => ws.current?.close();
-  }, []);
-
   if (!data) {
     return (
       <div className="min-h-screen bg-white dark:bg-[#020617] flex flex-col items-center justify-center p-6">
         <div className="w-12 h-12 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin mb-6" />
-        <p className="text-cyan-600 dark:text-cyan-400 font-mono text-xs tracking-widest uppercase animate-pulse">Establishing Secure Link...</p>
+        <p className="text-cyan-600 dark:text-cyan-400 font-mono text-xs tracking-widest uppercase animate-pulse">
+          {status === 'reconnecting' ? 'Link Severed. Retrying...' : 'Establishing Secure Link...'}
+        </p>
       </div>
     );
   }
@@ -521,73 +894,142 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#020617] text-slate-900 dark:text-slate-300 font-sans selection:bg-cyan-500/30 transition-colors duration-500">
       {/* HEADER */}
-      <header className="h-20 border-b border-slate-200 dark:border-slate-800/60 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between px-10 shadow-sm dark:shadow-2xl">
-        <div className="flex items-center gap-4">
+      <header className="h-20 border-b border-slate-200 dark:border-slate-800/60 bg-white/80 dark:bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50 flex items-center justify-between px-4 md:px-10 shadow-sm dark:shadow-2xl">
+        <div className="flex items-center gap-2 md:gap-4">
           <div className="p-2 bg-gradient-to-br from-cyan-600 to-emerald-600 rounded-lg">
-            <Shield className="w-6 h-6 text-white" />
+            <Shield className="w-5 h-5 md:w-6 md:h-6 text-white" />
           </div>
           <div className="flex flex-col">
-            <h1 className="text-lg font-black tracking-[0.2em] text-cyan-600 dark:text-cyan-400 uppercase glow-text-cyan">Trinity Terminal</h1>
-            <span className="text-[9px] text-slate-400 dark:text-slate-600 font-mono font-bold uppercase">Alpha execution system</span>
+            <h1 className="text-sm md:text-lg font-black tracking-[0.1em] md:tracking-[0.2em] text-cyan-600 dark:text-cyan-400 uppercase glow-text-cyan">Trinity Terminal</h1>
+            <span className="text-[8px] md:text-[9px] text-slate-400 dark:text-slate-600 font-mono font-bold uppercase">Alpha execution system</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-12">
-          <button 
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            className="p-2.5 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-cyan-600 dark:hover:text-white transition-all flex items-center gap-2 group"
-            title="Switch Theme"
-          >
-            {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-          <button 
-            onClick={() => {
-              if (confirm("⚠️ EMERGENCY: ARE YOU SURE YOU WANT TO CLOSE ALL POSITIONS IMMEDIATELY?")) {
-                console.log("EMERGENCY KILL SWITCH ACTIVATED");
-              }
-            }}
-            className="px-6 py-2.5 bg-rose-900/30 border border-rose-500/30 rounded-xl text-rose-400 hover:bg-rose-500 hover:text-white transition-all flex items-center gap-3 group animate-pulse hover:animate-none"
-            title="EMERGENCY KILL SWITCH"
-          >
-            <ShieldAlert className="w-5 h-5" />
-            <span className="text-[10px] font-black uppercase tracking-[0.2em] shadow-rose-500/20 shadow-lg">Kill Switch</span>
-          </button>
+        <div className="flex items-center gap-3 md:gap-6 lg:gap-12">
+          {/* DESKTOP NAV */}
+          <div className="hidden lg:flex items-center gap-4 xl:gap-8">
+            <button 
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className="p-2.5 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-cyan-600 dark:hover:text-white transition-all"
+              title="Switch Theme"
+            >
+              {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+            <button 
+              onClick={() => {
+                if (confirm("⚠️ EMERGENCY: ARE YOU SURE YOU WANT TO CLOSE ALL POSITIONS IMMEDIATELY?")) {
+                  addNotification('alert', 'EMERGENCY: Termination signal broadcast to all engines.');
+                }
+              }}
+              className="px-4 py-2.5 bg-rose-900/30 border border-rose-500/30 rounded-xl text-rose-400 hover:bg-rose-500 hover:text-white transition-all flex items-center gap-2 animate-pulse hover:animate-none"
+              title="EMERGENCY KILL SWITCH"
+            >
+              <ShieldAlert className="w-4 h-4" />
+              <span className="text-[9px] font-black uppercase tracking-widest">Kill Switch</span>
+            </button>
 
-          <button 
-            onClick={() => setShowInfra(true)}
-            className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all flex items-center gap-2 group"
-            title="System Diagnostics"
-          >
-            <Cpu className="w-5 h-5 group-hover:text-cyan-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest hidden xl:inline">Diag</span>
-          </button>
-          <button 
-            onClick={() => setShowSettings(true)}
-            className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all"
-            title="Bot Settings"
-          >
-            <Server className="w-5 h-5" />
-          </button>
-          <button 
-            onClick={() => setShowQuickTrade(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-[0_0_20px_rgba(6,182,212,0.3)]"
-          >
-            <Zap className="w-4 h-4" />
-            Quick Trade
-          </button>
+            <button 
+              onClick={() => setShowInfra(true)}
+              className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all flex items-center gap-2 group"
+              title="System Diagnostics"
+            >
+              <Cpu className="w-5 h-5 group-hover:text-cyan-400" />
+              <span className="text-[10px] font-black uppercase tracking-widest hidden xl:inline">Diag</span>
+            </button>
+            <button 
+              onClick={() => setShowSettings(true)}
+              className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white hover:border-slate-700 transition-all"
+              title="Bot Settings"
+            >
+              <Server className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={() => setShowQuickTrade(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-95 shadow-[0_0_20px_rgba(6,182,212,0.3)]"
+            >
+              <Zap className="w-4 h-4" />
+              Quick Trade
+            </button>
+          </div>
+
           <div className="flex flex-col items-end">
-            <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mb-1">Live Equity</span>
-            <span className="text-2xl font-mono font-bold text-white tabular-nums glow-text-emerald">
+            <span className="text-[8px] md:text-[9px] text-slate-600 font-bold uppercase tracking-widest mb-1">Live Equity</span>
+            <span className="text-lg md:text-2xl font-mono font-bold text-slate-900 dark:text-white tabular-nums glow-text-emerald">
               ${(data.account?.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </span>
           </div>
-          <div className={`px-4 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${
-            connected ? 'border-emerald-500/20 text-emerald-400 bg-emerald-500/5' : 'border-rose-500/20 text-rose-500 bg-rose-500/5'
+
+          <button 
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+            className="lg:hidden p-2 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-500 dark:text-slate-400"
+          >
+            {showMobileMenu ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+
+          <div className={`hidden sm:flex px-4 py-1.5 rounded-full border text-[10px] font-black uppercase tracking-widest items-center gap-2 transition-all duration-300 ${
+            status === 'connected' 
+              ? 'border-emerald-500/20 text-emerald-400 bg-emerald-500/5' 
+              : 'border-rose-500/20 text-rose-500 bg-rose-500/5 animate-pulse'
           }`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            {connected ? (data.api_status === 'connected' ? 'Live Feed' : 'API Link Failure') : 'Link Offline'}
+            <div className={`w-1.5 h-1.5 rounded-full ${status === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            <span className="hidden md:inline">{status === 'connected' ? 'Live' : 'Reconnecting...'}</span>
           </div>
         </div>
+
+        {/* MOBILE MENU */}
+        <AnimatePresence>
+          {showMobileMenu && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="absolute top-20 left-0 w-full bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 shadow-2xl z-40 lg:hidden"
+            >
+              <div className="p-6 grid grid-cols-2 gap-4">
+                <button 
+                  onClick={() => { setIsDarkMode(!isDarkMode); setShowMobileMenu(false); }}
+                  className="p-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col items-center gap-2"
+                >
+                  {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+                  <span className="text-[10px] font-bold uppercase">Theme</span>
+                </button>
+                <button 
+                  onClick={() => { setShowInfra(true); setShowMobileMenu(false); }}
+                  className="p-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col items-center gap-2"
+                >
+                  <Cpu className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase">Diagnostics</span>
+                </button>
+                <button 
+                  onClick={() => { setShowSettings(true); setShowMobileMenu(false); }}
+                  className="p-4 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col items-center gap-2"
+                >
+                  <Server className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase">Settings</span>
+                </button>
+                <button 
+                  onClick={() => { setShowQuickTrade(true); setShowMobileMenu(false); }}
+                  className="p-4 bg-cyan-500 text-slate-950 rounded-xl flex flex-col items-center gap-2"
+                >
+                  <Zap className="w-5 h-5" />
+                  <span className="text-[10px] font-bold uppercase">Quick Trade</span>
+                </button>
+                <button 
+                  onClick={() => {
+                    if (confirm("⚠️ EMERGENCY KILL SWITCH?")) {
+                      addNotification('alert', 'EMERGENCY: Termination signal broadcast.');
+                    }
+                    setShowMobileMenu(false);
+                  }}
+                  className="p-4 bg-rose-500 text-white rounded-xl col-span-2 flex items-center justify-center gap-3"
+                >
+                  <ShieldAlert className="w-5 h-5" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">EMERGENCY KILL SWITCH</span>
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </header>
 
       {/* NOTIFICATION OVERLAY */}
@@ -632,12 +1074,18 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      <main className="max-w-[1700px] mx-auto p-10 space-y-12">
+      <main className="max-w-[1700px] mx-auto p-4 md:p-10 space-y-8 md:y-12">
         {/* KPI SECTION */}
-        <section className="grid grid-cols-1 md:grid-cols-6 gap-6">
+        <section className="grid grid-cols-2 lg:grid-cols-6 gap-4 md:gap-6">
           {[
             { label: 'Active Engines', value: (data.bots ?? []).filter(b => b.status === 'ÎN TRADE').length, icon: Cpu, color: 'text-cyan-400' },
-            { label: 'Daily Net', value: '+$142.20', icon: TrendingUp, color: 'text-emerald-400' },
+            { 
+              label: 'Daily Net', 
+              value: '+$142.20', 
+              icon: TrendingUp, 
+              color: 'text-emerald-400',
+              showChart: true
+            },
             { 
               label: 'Margin Level', 
               value: `${(data.account?.margin_level ?? 2500).toFixed(0)}%`, 
@@ -645,7 +1093,7 @@ export default function App() {
               color: (data.account?.margin_level ?? 2500) < 500 ? 'text-rose-500 animate-pulse' : 'text-cyan-400' 
             },
             { 
-              label: 'Market Sentiment', 
+              label: 'Sentiment', 
               value: data.sentiment?.label ?? 'STABLE', 
               icon: Waves, 
               color: data.sentiment?.label === 'EXTREME FEAR' ? 'text-rose-400' : 'text-blue-400',
@@ -660,12 +1108,30 @@ export default function App() {
             },
             { label: 'System Load', value: '14%', icon: Activity, color: 'text-slate-400' },
           ].map((kpi, i) => (
-            <div key={i} className="bg-white dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-6 shadow-sm dark:shadow-none">
-              <div className="flex items-center gap-3 mb-4">
-                <kpi.icon className={`w-4 h-4 ${kpi.color}`} />
-                <span className="text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-600">{kpi.label}</span>
+            <div key={i} className="bg-white dark:bg-slate-900/30 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-4 md:p-6 shadow-sm dark:shadow-none">
+              <div className="flex items-center gap-3 mb-2 md:mb-4">
+                <kpi.icon className={`w-3.5 h-3.5 md:w-4 md:h-4 ${kpi.color}`} />
+                <span className="text-[8px] md:text-[9px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-600 truncate">{kpi.label}</span>
               </div>
-              <p className={`text-2xl font-mono font-black ${kpi.color} tabular-nums`}>{kpi.value}</p>
+              <p className={`text-lg md:text-2xl font-mono font-black ${kpi.color} tabular-nums`}>{kpi.value}</p>
+              
+              {'showChart' in kpi && kpi.showChart && (
+                <div className="h-10 mt-4 -mx-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dailyNetTrend}>
+                      <Line 
+                        type="monotone" 
+                        dataKey="net" 
+                        stroke="#10b981" 
+                        strokeWidth={2} 
+                        dot={false} 
+                        animationDuration={2000}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
               {'subValue' in kpi && (
                 <p className="text-[9px] font-mono text-slate-500 dark:text-slate-600 mt-2">{kpi.subValue}</p>
               )}
@@ -712,27 +1178,48 @@ export default function App() {
         <section>
           <div className="flex items-center gap-3 mb-8">
             <div className="w-1.5 h-6 bg-cyan-500 rounded-full" />
-            <h2 className="text-lg font-black text-white uppercase tracking-wider italic">Operational Units</h2>
+            <h2 className="text-sm md:text-lg font-black text-slate-900 dark:text-white uppercase tracking-wider italic">Operational Units</h2>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-            <AnimatePresence mode="popLayout">
-              {(data.bots ?? []).map((bot) => (
-                <BotCard key={bot.id} bot={bot} onAnalyze={setSelectedAnalysisBot} />
-              ))}
-            </AnimatePresence>
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 md:gap-10">
+            <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 md:gap-6">
+              <AnimatePresence mode="popLayout">
+                {(data.bots ?? []).map((bot) => (
+                  <BotCard 
+                    key={bot.id} 
+                    bot={bot} 
+                    onAnalyze={setSelectedAnalysisBot} 
+                    isPaused={pausedBotIds.has(bot.id)}
+                    settings={botSettings[bot.id]}
+                    onTogglePause={() => {
+                      setBotSettings(prev => ({
+                        ...prev,
+                        [bot.id]: {
+                          threshold: prev[bot.id]?.threshold || -50,
+                          maxDrawdownPct: prev[bot.id]?.maxDrawdownPct || 5,
+                          autoPauseEnabled: !prev[bot.id]?.autoPauseEnabled
+                        }
+                      }));
+                    }}
+                  />
+                ))}
+              </AnimatePresence>
+            </div>
+            <div className="lg:col-span-1">
+              <VolatilityHeatmap isDarkMode={isDarkMode} />
+            </div>
           </div>
         </section>
 
         {/* HISTORY & INFRA */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-10">
-          <div className="xl:col-span-2 space-y-12">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8 md:gap-10">
+          <div className="xl:col-span-2 space-y-8 md:space-y-12">
             {/* PERFORMANCE CHART */}
             <section>
-              <div className="flex items-center gap-3 mb-8 px-2">
-                <LineChartIcon className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-wider">Performance History (24H)</h2>
+              <div className="flex items-center gap-3 mb-6 md:mb-8 px-2">
+                <LineChartIcon className="w-4 h-4 md:w-5 md:h-5 text-cyan-400" />
+                <h2 className="text-sm md:text-lg font-black text-slate-900 dark:text-white uppercase tracking-wider">Performance History (24H)</h2>
               </div>
-              <div className="bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800/80 rounded-3xl p-8 h-[350px] shadow-sm dark:shadow-inner backdrop-blur-sm relative overflow-hidden">
+              <div className="bg-white dark:bg-slate-950/40 border border-slate-200 dark:border-slate-800/80 rounded-3xl p-4 md:p-8 h-[250px] md:h-[350px] shadow-sm dark:shadow-inner backdrop-blur-sm relative overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-500/20 to-transparent" />
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={equityHistory}>
@@ -784,6 +1271,8 @@ export default function App() {
               </div>
             </section>
 
+            <PerformanceMetricsTable bots={data.bots ?? []} />
+
             <section>
               <div className="flex items-center justify-between mb-8 px-1">
               <div className="flex items-center gap-3">
@@ -824,8 +1313,8 @@ export default function App() {
                 Export CSV
               </button>
             </div>
-            <div className="bg-slate-950/40 border border-slate-800/80 rounded-2xl overflow-hidden">
-              <table className="w-full text-left">
+            <div className="bg-slate-950/40 border border-slate-800/80 rounded-2xl overflow-x-auto">
+              <table className="w-full text-left min-w-[600px]">
                 <thead>
                   <tr className="bg-slate-900/30 border-b border-slate-800/60 text-[9px] uppercase tracking-widest text-slate-600">
                     <th className="px-6 py-4">Time</th>
@@ -901,9 +1390,9 @@ export default function App() {
             <Ticket className="w-5 h-5 text-cyan-400" />
             <h2 className="text-lg font-black text-white uppercase tracking-wider italic underline decoration-cyan-500/30 underline-offset-8">Market Conditions (Live Specs)</h2>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 md:gap-8">
             {(data.market_specs ?? []).map((spec, i) => (
-              <div key={i} className="bg-slate-900/30 border border-slate-800/40 p-8 rounded-[2rem] group hover:border-cyan-500/40 transition-all relative overflow-hidden">
+              <div key={i} className="bg-slate-900/30 border border-slate-800/40 p-6 md:p-8 rounded-[2rem] group hover:border-cyan-500/40 transition-all relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 blur-3xl rounded-full -mr-16 -mt-16 group-hover:bg-cyan-500/10 transition-colors" />
                 <div className="flex justify-between items-center mb-6 relative">
                   <span className="text-base font-black text-white uppercase tracking-tighter italic">{spec.symbol}</span>
@@ -1263,27 +1752,97 @@ export default function App() {
                   {(data.bots ?? []).map(bot => (
                     <div key={bot.id} className="bg-slate-950/50 border border-slate-800/50 p-6 rounded-2xl space-y-4">
                       <div className="flex justify-between items-center">
-                        <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">{bot.name}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">{bot.name}</span>
+                          {pausedBotIds.has(bot.id) && (
+                            <span className="px-2 py-0.5 bg-rose-500/20 text-rose-500 text-[8px] font-black rounded uppercase">Paused</span>
+                          )}
+                        </div>
                         <span className="text-[10px] font-mono text-slate-500">ID: {bot.id}</span>
                       </div>
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-[9px] text-slate-600 font-bold uppercase tracking-widest">
-                          <span>Loss Alert Threshold ($)</span>
-                          <span className="text-rose-400">-{Math.abs(botSettings[bot.id]?.threshold || -50)}</span>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-[9px] text-slate-600 font-bold uppercase tracking-widest">
+                            <span>Max Drawdown (%)</span>
+                            <span className="text-cyan-400">{botSettings[bot.id]?.maxDrawdownPct || 5}%</span>
+                          </div>
+                          <input 
+                            type="number"
+                            min="0.1"
+                            max="50"
+                            step="0.1"
+                            value={botSettings[bot.id]?.maxDrawdownPct || 5}
+                            onChange={(e) => setBotSettings(prev => ({
+                              ...prev,
+                              [bot.id]: { 
+                                ...prev[bot.id],
+                                threshold: prev[bot.id]?.threshold || -50,
+                                autoPauseEnabled: prev[bot.id]?.autoPauseEnabled || false,
+                                maxDrawdownPct: parseFloat(e.target.value) || 1
+                              }
+                            }))}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-cyan-400 focus:outline-none focus:border-cyan-500/50 transition-colors"
+                          />
                         </div>
-                        <input 
-                          type="range"
-                          min="10"
-                          max="500"
-                          step="10"
-                          value={Math.abs(botSettings[bot.id]?.threshold || -50)}
-                          onChange={(e) => setBotSettings(prev => ({
-                            ...prev,
-                            [bot.id]: { threshold: -parseInt(e.target.value) }
-                          }))}
-                          className="w-full accent-cyan-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
-                        />
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-[9px] text-slate-600 font-bold uppercase tracking-widest">
+                            <span>Loss Threshold ($)</span>
+                            <span className="text-rose-400">-{Math.abs(botSettings[bot.id]?.threshold || 50)}</span>
+                          </div>
+                          <input 
+                            type="number"
+                            min="10"
+                            max="5000"
+                            step="10"
+                            value={Math.abs(botSettings[bot.id]?.threshold || 50)}
+                            onChange={(e) => setBotSettings(prev => ({
+                              ...prev,
+                              [bot.id]: { 
+                                ...prev[bot.id],
+                                threshold: -Math.abs(parseFloat(e.target.value)) || -50,
+                                autoPauseEnabled: prev[bot.id]?.autoPauseEnabled || false,
+                                maxDrawdownPct: prev[bot.id]?.maxDrawdownPct || 5
+                              }
+                            }))}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-rose-400 focus:outline-none focus:border-rose-500/50 transition-colors"
+                          />
+                        </div>
                       </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-800/50">
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Auto-Pause Protocol</p>
+                          <p className="text-[8px] text-slate-600 font-medium">Emergency halt on drawdown hit</p>
+                        </div>
+                        <button 
+                          onClick={() => setBotSettings(prev => ({
+                            ...prev,
+                            [bot.id]: { 
+                              ...prev[bot.id],
+                              threshold: prev[bot.id]?.threshold || -50,
+                              maxDrawdownPct: prev[bot.id]?.maxDrawdownPct || 5,
+                              autoPauseEnabled: !prev[bot.id]?.autoPauseEnabled 
+                            }
+                          }))}
+                          className={`w-10 h-5 rounded-full relative transition-colors duration-200 ${botSettings[bot.id]?.autoPauseEnabled ? 'bg-cyan-500' : 'bg-slate-800'}`}
+                        >
+                          <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-200 ${botSettings[bot.id]?.autoPauseEnabled ? 'left-6' : 'left-1'}`} />
+                        </button>
+                      </div>
+
+                      {pausedBotIds.has(bot.id) && (
+                        <button 
+                          onClick={() => setPausedBotIds(prev => {
+                            const next = new Set(prev);
+                            next.delete(bot.id);
+                            return next;
+                          })}
+                          className="w-full py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 text-[10px] font-black uppercase tracking-widest rounded-xl border border-emerald-500/20 transition-all"
+                        >
+                          Resume Execution
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>

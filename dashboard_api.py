@@ -308,6 +308,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 payload = json.loads(message_text)
                 if payload.get("type") == "MANUAL_TRADE":
                     logger.info(f"🚀 MANUAL TRADE RECEIVED: {payload.get('side')} {payload.get('lot')} {payload.get('symbol')}")
+                if payload.get("type") == "BOT_COMMAND":
+                    logger.info(f"🤖 BOT COMMAND RECEIVED: {payload.get('command')} FOR BOT {payload.get('botId')}")
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
